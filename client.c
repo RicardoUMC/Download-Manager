@@ -8,12 +8,23 @@
 #include <sys/stat.h>
 #include <ctype.h>
 #include <errno.h>
+#include <dirent.h>
 
 #define BUFFER_SIZE 1024
 #define DEFAULT_PORT 80
 
 void save_to_file(const char *filename, const char *data);
 void download_resource(const char *host, const char *recurso, int level);
+int is_empty(const char *path);
+int has_been_processed(const char *resource);
+void mark_as_processed(const char *resource);
+
+typedef struct ProcessedNode {
+    char *resource;
+    struct ProcessedNode *next;
+} ProcessedNode;
+
+ProcessedNode *processed_list = NULL;
 
 void error(const char *msg) {
     perror(msg);
@@ -39,7 +50,7 @@ char *strcasestr(const char *haystack, const char *needle) {
 
 void create_directory(const char *path) {
     char command[BUFFER_SIZE];
-    snprintf(command, sizeof(command), "mkdir -p ./%s", path);
+    snprintf(command, sizeof(command), "mkdir -p \"%s\"", path);
     if (system(command) != 0) {
         fprintf(stderr, "Error al crear el directorio %s: %s\n", path, strerror(errno));
     }
@@ -123,6 +134,23 @@ int main(int argc, char *argv[]) {
 
 // Función para guardar la respuesta en un archivo
 void save_to_file(const char *filename, const char *data) {
+    // Verificar que el nombre del archivo no sea demasiado largo
+    if (strlen(filename) >= BUFFER_SIZE) {
+        fprintf(stderr, "Error: Nombre de archivo demasiado largo: %s\n", filename);
+        return;
+    }
+
+    // Crear el directorio para el archivo si no existe
+    char dir_name[BUFFER_SIZE];
+    char *last_slash = strrchr(filename, '/');
+    if (last_slash != NULL) {
+        size_t dir_len = last_slash - filename;
+        strncpy(dir_name, filename, dir_len);
+        dir_name[dir_len] = '\0';
+        create_directory(dir_name);
+    }
+
+    // Guardar el contenido en el archivo
     FILE *file = fopen(filename, "wb");
     if (file == NULL) {
         error("Error al abrir el archivo para escribir");
@@ -131,10 +159,66 @@ void save_to_file(const char *filename, const char *data) {
     fclose(file);
 }
 
+// Función para verificar si un archivo o directorio está vacío
+int is_empty(const char *path) {
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        if (S_ISDIR(st.st_mode)) {
+            // Es un directorio, verificar si está vacío
+            int n = 0;
+            struct dirent *d;
+            DIR *dir = opendir(path);
+            if (dir == NULL) return 1; // Si no se puede abrir, considerar vacío
+            while ((d = readdir(dir)) != NULL) {
+                if (++n > 2) break; // Directorio no está vacío (contiene más de '.' y '..')
+            }
+            closedir(dir);
+            return n <= 2;
+        } else if (S_ISREG(st.st_mode)) {
+            // Es un archivo, verificar si tiene tamaño cero
+            return st.st_size == 0;
+        }
+    }
+    return 1; // Si no se puede obtener información, considerar vacío
+}
+
+// Función para verificar si un recurso ya ha sido procesado
+int has_been_processed(const char *resource) {
+    ProcessedNode *current = processed_list;
+    while (current != NULL) {
+        if (strcmp(current->resource, resource) == 0) {
+            return 1;
+        }
+        current = current->next;
+    }
+    return 0;
+}
+
+// Función para marcar un recurso como procesado
+void mark_as_processed(const char *resource) {
+    ProcessedNode *new_node = (ProcessedNode *)malloc(sizeof(ProcessedNode));
+    new_node->resource = strdup(resource);
+    new_node->next = processed_list;
+    processed_list = new_node;
+}
+
 // Función para descargar un recurso
 void download_resource(const char *host, const char *recurso, int level) {
-    //if (level > 2) return; // Acotar a 2 niveles de profundidad
+    // Ignorar archivos con la extensión .swf
+    const char *ext = strrchr(recurso, '.');
+    if (ext && strcmp(ext, ".swf") == 0) {
+        return;
+    }
 
+    // Verificar si el recurso ya ha sido procesado
+    if (has_been_processed(recurso)) {
+        return;
+    }
+
+    // Marcar el recurso como procesado
+    mark_as_processed(recurso);
+
+    // Crear el socket
     int puerto = DEFAULT_PORT;
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0)
@@ -152,7 +236,7 @@ void download_resource(const char *host, const char *recurso, int level) {
 
     char request[BUFFER_SIZE];
     snprintf(request, BUFFER_SIZE, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nAccept: text/html\r\n\r\n", recurso, host);
-    printf("Recurso: %s\n", recurso);
+    //printf("Recurso: %s\n", recurso);
 
     if (send(sockfd, request, strlen(request), 0) < 0)
         error("Error al enviar la solicitud");
@@ -163,6 +247,7 @@ void download_resource(const char *host, const char *recurso, int level) {
     char *body_start = NULL;
     int body_started = 0;
     int status_code = 0;
+    char *content_type;
 
     while ((bytes_received = recv(sockfd, buffer, BUFFER_SIZE - 1, 0)) > 0) {
         buffer[bytes_received] = '\0';
@@ -173,10 +258,21 @@ void download_resource(const char *host, const char *recurso, int level) {
                 body_started = 1;
                 body_start += 4; // Saltar los caracteres \r\n\r\n
 
-                // Procesar los encabezados para obtener el código de estado
+                // Procesar los encabezados para obtener el código de estado y el tipo MIME
                 char *status_line = strtok(buffer, "\r\n");
                 if (status_line != NULL) {
                     sscanf(status_line, "HTTP/1.1 %d", &status_code);
+                }
+
+                // Obtener el encabezado Content-Type
+                char *header_line = status_line + strlen(status_line) + 1;
+                while (header_line < body_start) {
+                    if (strstr(header_line, "Content-Type:") != NULL) {
+                        content_type = strstr(header_line, "Content-Type: ") + strlen("Content-Type: ");
+                        sscanf(header_line, "Content-Type: %s", content_type);
+                        break;
+                    }
+                    header_line += strlen(header_line) + 1;
                 }
 
                 // Si el código de estado no es 200, salir
@@ -186,7 +282,15 @@ void download_resource(const char *host, const char *recurso, int level) {
                     return;
                 }
 
-                printf("Recurso '%s' obtenido correctamente.\n", recurso);
+                // Verificar el tipo MIME
+                if (strncmp(content_type, "text/html", strlen("text/html")) != 0 && strncmp(content_type, "text/plain", strlen("text/plain")) != 0) {
+                    content_type[10] = '\0';
+                    //printf("Ignorando el recurso de tipo MIME no permitido: %s\n", content_type);
+                    close(sockfd);
+                    return;
+                }
+
+                //printf("Recurso '%s' obtenido correctamente.\n", recurso);
 
                 // Agregar el cuerpo recibido después de los encabezados al buffer de respuesta
                 strncat(response, body_start, bytes_received - (body_start - buffer));
@@ -208,14 +312,22 @@ void download_resource(const char *host, const char *recurso, int level) {
         filename = "index.html";
     }
 
-    // Crear el directorio correspondiente si es un directorio
+    // Verificar si es un directorio HTML
     if (strstr(response, "<html") != NULL && strstr(response, "<body") != NULL) {
+        // Crear el directorio correspondiente si es un directorio
         create_directory(recurso + 1);  // Quitar el '/' inicial para crear un directorio relativo
+
+        // Construir la ruta completa del archivo index.html
         char file_path[BUFFER_SIZE];
         snprintf(file_path, sizeof(file_path), "./%s/index.html", recurso + 1);
+
+        // Guardar el contenido en el archivo index.html dentro del directorio
         save_to_file(file_path, response);
     } else {
-        save_to_file(filename, response);
+        // Si no es HTML, asumir que es un archivo y guardarlo directamente
+        char file_path[BUFFER_SIZE];
+        snprintf(file_path, sizeof(file_path), "./%s", recurso); // Guardar en la ruta correspondiente
+        save_to_file(file_path, response);
     }
 
     // Analizar y descargar recursos adicionales si es HTML
@@ -223,24 +335,31 @@ void download_resource(const char *host, const char *recurso, int level) {
         char *ptr = response;
         char *ptr_aux;
         while ((ptr_aux = strcasestr(ptr, "href=\"")) != NULL || (ptr_aux = strcasestr(ptr, "src=\"")) != NULL) {
-            if (ptr_aux != NULL) {
-                ptr = ptr_aux;
-                ptr += (ptr_aux[0] == 'h') ? 6 : 5; // Avanzar más allá de "href=\"" o "src=\""
-                char *end = strchr(ptr, '"');
-                if (end == NULL) break;
-                char link[BUFFER_SIZE];
-                strncpy(link, ptr, end - ptr);
-                link[end - ptr] = '\0';
+            ptr = ptr_aux;
+            ptr += (ptr_aux[0] == 'h') ? 6 : 5; // Avanzar más allá de "href=\"" o "src=\""
+            char *end = strchr(ptr, '"');
+            if (end == NULL) break;
+            char link[BUFFER_SIZE];
+            strncpy(link, ptr, end - ptr);
+            link[end - ptr] = '\0';
 
-                if (strstr(link, "?") == NULL && strstr(link, "http") == NULL) { // Solo manejar enlaces relativos, ignorando '?'
-                    char new_resource[BUFFER_SIZE * 2];
+            if (strstr(link, "?") == NULL && strstr(link, "http") == NULL) { // Solo manejar enlaces relativos, ignorando '?'
+                char new_resource[BUFFER_SIZE * 2];
+
+                if (recurso[0] != link[0]) {
                     snprintf(new_resource, BUFFER_SIZE * 2, "%s/%s", recurso, link);
-                    download_resource(host, new_resource, level + 1);
+                }
+                else {
+                    snprintf(new_resource, BUFFER_SIZE * 2, "%s", link);
                 }
 
-                ptr = end + 1;
+                // Descargar el recurso solo si no se ha descargado antes para evitar duplicados
+                if (is_empty(new_resource)) {
+                    download_resource(host, new_resource, level + 1);
+                }
             }
+
+            ptr = end + 1;
         }
     }
 }
-
