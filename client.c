@@ -7,6 +7,7 @@
 #include <libgen.h>
 #include <sys/stat.h>
 #include <ctype.h>
+#include <errno.h>
 
 #define BUFFER_SIZE 1024
 #define DEFAULT_PORT 80
@@ -28,10 +29,20 @@ char *strcasestr(const char *haystack, const char *needle) {
             for (h = haystack, n = needle; *h && *n; ++h, ++n) {
                 if (tolower(*h) != tolower(*n)) break;
             }
-            if (!*n) return (char *)haystack;
+            if (!*n) {
+                return (char *)haystack;
+            }
         }
     }
     return NULL;
+}
+
+void create_directory(const char *path) {
+    char command[BUFFER_SIZE];
+    snprintf(command, sizeof(command), "mkdir -p ./%s", path);
+    if (system(command) != 0) {
+        fprintf(stderr, "Error al crear el directorio %s: %s\n", path, strerror(errno));
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -50,13 +61,11 @@ int main(int argc, char *argv[]) {
     char *aux_entrada;
 
     // Verificar si se proporcionó el protocolo en la entrada
-    if (strstr(entrada, http) == entrada ) {
+    if (strstr(entrada, http) == entrada) {
         aux_entrada = entrada + strlen(http); // Avanzar más allá del protocolo
-    }
-    else if (strstr(entrada, https) == entrada ) {
+    } else if (strstr(entrada, https) == entrada) {
         aux_entrada = entrada + strlen(https); // Avanzar más allá del protocolo
-    }
-    else {
+    } else {
         aux_entrada = entrada; // No se proporcionó el protocolo, asumir que es HTTP
     }
 
@@ -103,25 +112,7 @@ int main(int argc, char *argv[]) {
     if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
         error("Error al conectar");
 
-    // Construir la solicitud HTTP
-    char request[BUFFER_SIZE];
-    snprintf(request, BUFFER_SIZE, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nAccept: text/html\r\n\r\n", recurso, direccion);
-
-    // Enviar la solicitud al servidor
-    if (send(sockfd, request, strlen(request), 0) < 0)
-        error("Error al enviar la solicitud");
-
-    // Recibir y mostrar la respuesta del servidor
-    /*char buffer[BUFFER_SIZE];
-    int bytes_received;
-    while ((bytes_received = recv(sockfd, buffer, BUFFER_SIZE - 1, 0)) > 0) {
-        buffer[bytes_received] = '\0';
-        printf("%s", buffer);
-    }
-
-    if (bytes_received < 0)
-        error("Error al recibir la respuesta");
-    */
+    // Descargar el recurso
     download_resource(direccion, recurso, 0);
 
     free(direccion);
@@ -161,13 +152,14 @@ void download_resource(const char *host, const char *recurso, int level) {
 
     char request[BUFFER_SIZE];
     snprintf(request, BUFFER_SIZE, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nAccept: text/html\r\n\r\n", recurso, host);
+    printf("Recurso: %s\n", recurso);
 
     if (send(sockfd, request, strlen(request), 0) < 0)
         error("Error al enviar la solicitud");
 
     char buffer[BUFFER_SIZE];
     int bytes_received;
-    char response[BUFFER_SIZE * 10] = {0}; // Buffer para almacenar la respuesta completa
+    char response[BUFFER_SIZE * 100] = {0}; // Buffer para almacenar la respuesta completa
     char *body_start = NULL;
     int body_started = 0;
     int status_code = 0;
@@ -214,26 +206,36 @@ void download_resource(const char *host, const char *recurso, int level) {
         filename = "index.html";
     }
 
-    save_to_file(filename, response);
+    // Crear el directorio correspondiente si es un directorio
+    if (strstr(response, "<html") != NULL && strstr(response, "<body") != NULL) {
+        create_directory(recurso + 1);  // Quitar el '/' inicial para crear un directorio relativo
+        char file_path[BUFFER_SIZE];
+        snprintf(file_path, sizeof(file_path), "./%s/index.html", recurso + 1);
+        save_to_file(file_path, response);
+    } else {
+        save_to_file(filename, response);
+    }
 
     // Analizar y descargar recursos adicionales si es HTML
     if (strstr(response, "<!DOCTYPE html>") != NULL || strstr(response, "<html") != NULL) {
         char *ptr = response;
         while ((ptr = strcasestr(ptr, "href=\"")) != NULL || (ptr = strcasestr(ptr, "src=\"")) != NULL) {
-            ptr += 6;
-            char *end = strchr(ptr, '"');
-            if (end == NULL) break;
-            char link[BUFFER_SIZE];
-            strncpy(link, ptr, end - ptr);
-            link[end - ptr] = '\0';
+            if (ptr != NULL) {
+                ptr += (ptr[0] == 'h') ? 6 : 5; // Avanzar más allá de "href=\"" o "src=\""
+                char *end = strchr(ptr, '"');
+                if (end == NULL) break;
+                char link[BUFFER_SIZE];
+                strncpy(link, ptr, end - ptr);
+                link[end - ptr] = '\0';
 
-            if (strstr(link, "http") == NULL) { // Solo manejar enlaces relativos
-                char new_resource[BUFFER_SIZE];
-                snprintf(new_resource, BUFFER_SIZE, "%s", link);
-                download_resource(host, new_resource, level + 1);
+                if (strstr(link, "http") == NULL) { // Solo manejar enlaces relativos
+                    char new_resource[BUFFER_SIZE * 2];
+                    snprintf(new_resource, BUFFER_SIZE * 2, "%s/%s", recurso, link);
+                    download_resource(host, new_resource, level + 1);
+                }
+
+                ptr = end + 1;
             }
-
-            ptr = end + 1;
         }
     }
 }
