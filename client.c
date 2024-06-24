@@ -133,7 +133,7 @@ void save_to_file(const char *filename, const char *data) {
 
 // Función para descargar un recurso
 void download_resource(const char *host, const char *recurso, int level) {
-    if (level > 2) return; // Acotar a 2 niveles de profundidad
+    //if (level > 2) return; // Acotar a 2 niveles de profundidad
 
     int puerto = DEFAULT_PORT;
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -181,10 +181,12 @@ void download_resource(const char *host, const char *recurso, int level) {
 
                 // Si el código de estado no es 200, salir
                 if (status_code != 200) {
-                    fprintf(stderr, "Error: el servidor respondió con el código de estado %d\n", status_code);
+                    fprintf(stderr, "Error: el servidor respondió con el código de estado %d. Intentando obtener recurso '%s'\n", status_code, recurso);
                     close(sockfd);
                     return;
                 }
+
+                printf("Recurso '%s' obtenido correctamente.\n", recurso);
 
                 // Agregar el cuerpo recibido después de los encabezados al buffer de respuesta
                 strncat(response, body_start, bytes_received - (body_start - buffer));
@@ -219,16 +221,18 @@ void download_resource(const char *host, const char *recurso, int level) {
     // Analizar y descargar recursos adicionales si es HTML
     if (strstr(response, "<!DOCTYPE html>") != NULL || strstr(response, "<html") != NULL) {
         char *ptr = response;
-        while ((ptr = strcasestr(ptr, "href=\"")) != NULL || (ptr = strcasestr(ptr, "src=\"")) != NULL) {
-            if (ptr != NULL) {
-                ptr += (ptr[0] == 'h') ? 6 : 5; // Avanzar más allá de "href=\"" o "src=\""
+        char *ptr_aux;
+        while ((ptr_aux = strcasestr(ptr, "href=\"")) != NULL || (ptr_aux = strcasestr(ptr, "src=\"")) != NULL) {
+            if (ptr_aux != NULL) {
+                ptr = ptr_aux;
+                ptr += (ptr_aux[0] == 'h') ? 6 : 5; // Avanzar más allá de "href=\"" o "src=\""
                 char *end = strchr(ptr, '"');
                 if (end == NULL) break;
                 char link[BUFFER_SIZE];
                 strncpy(link, ptr, end - ptr);
                 link[end - ptr] = '\0';
 
-                if (strstr(link, "http") == NULL) { // Solo manejar enlaces relativos
+                if (strstr(link, "?") == NULL && strstr(link, "http") == NULL) { // Solo manejar enlaces relativos, ignorando '?'
                     char new_resource[BUFFER_SIZE * 2];
                     snprintf(new_resource, BUFFER_SIZE * 2, "%s/%s", recurso, link);
                     download_resource(host, new_resource, level + 1);
