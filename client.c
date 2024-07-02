@@ -153,6 +153,7 @@ void save_to_file(const char *filename, const char *data) {
     // Guardar el contenido en el archivo
     FILE *file = fopen(filename, "wb");
     if (file == NULL) {
+        printf("Archivo: %s. ", filename);
         error("Error al abrir el archivo para escribir");
     }
     fwrite(data, 1, strlen(data), file);
