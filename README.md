@@ -90,7 +90,3 @@ El código fuente está en `main.c`. Aquí tienes una breve descripción de las 
 4. Se envía una solicitud HTTP GET para descargar el recurso.
 5. Se guarda el contenido descargado en el sistema de archivos local.
 6. Si el contenido es HTML, se analizan los enlaces y se descargan recursivamente los recursos enlazados.
-
-## Autor
-
-- RicardoUMC
