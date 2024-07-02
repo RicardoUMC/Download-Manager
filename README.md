@@ -13,7 +13,7 @@ Este proyecto es un programa en C que descarga recursos web desde una URL espec�
 Para compilar el programa, ejecuta el siguiente comando en tu terminal:
 
 ```bash
-gcc -o web_downloader main.c
+gcc -o web_downloader web_downloader.c
 ```
 
 Esto generará un ejecutable llamado `web_downloader`.
@@ -72,7 +72,7 @@ Puedes probar el programa utilizando cualquier URL válida. Aquí hay algunos ej
 
 ## Código Fuente
 
-El código fuente está en `main.c`. Aquí tienes una breve descripción de las funciones principales:
+El código fuente está en `web_downloader.c`. Aquí tienes una breve descripción de las funciones principales:
 
 - `save_to_file`: Guarda datos en un archivo.
 - `download_resource`: Descarga un recurso web.
